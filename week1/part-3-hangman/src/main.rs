@@ -14,6 +14,7 @@
 // more in depth in the coming lectures.
 extern crate rand;
 use rand::Rng;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::io::Write;
@@ -34,7 +35,49 @@ fn main() {
     // secret_word by doing secret_word_chars[i].
     let secret_word_chars: Vec<char> = secret_word.chars().collect();
     // Uncomment for debugging:
-    // println!("random word: {}", secret_word);
-
+    println!("random word: {}", secret_word);
     // Your code here! :)
+    let mut incorrect_cnt = 0;
+    let mut set: HashSet<usize> = HashSet::new();
+    let mut guesses = String::from("");
+    while incorrect_cnt < NUM_INCORRECT_GUESSES && set.len() < secret_word_chars.len() {
+        print!("The word so far is: ");
+        for i in 0..secret_word_chars.len() {
+            if set.contains(&i) {
+                print!("{}", secret_word_chars[i]);
+            } else {
+                print!("-");
+            }
+        }
+        print!("\n");
+        println!("You have guessed: {}", guesses);
+
+        print!("Please enter a letter: ");
+        io::stdout().flush().expect("error flushing stdout");
+        let mut guess = String::new();
+        io::stdin()
+            .read_line(&mut guess)
+            .expect("error reading line");
+        let c = guess.as_bytes()[0];
+        let c = c as char;
+        guesses.push(c);
+        let mut i = 0;
+        while i < secret_word_chars.len() {
+            if c == secret_word_chars[i] {
+                set.insert(i);
+                break;
+            }
+            i += 1;
+        }
+        if i == secret_word_chars.len() {
+            println!("Wrong guess");
+            incorrect_cnt += 1;
+        }
+        println!("");
+    }
+    if incorrect_cnt == NUM_INCORRECT_GUESSES {
+        println!("Sorry, you run out of guesses");
+    } else {
+        println!("You win!");
+    }
 }
