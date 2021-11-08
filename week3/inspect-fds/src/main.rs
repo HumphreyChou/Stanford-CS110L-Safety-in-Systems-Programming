@@ -12,13 +12,22 @@ fn main() {
     }
     let target = &args[1];
     let process = ps_utils::get_target(&target).expect("Error in calling ps or pgrep");
-    match process {
+    match &process {
         Some(proc) => proc.print(),
         None => {
             println!("Target {} does not match any running PIDs", target);
             std::process::exit(1);
         }
     }
+    match ps_utils::get_child_processes(process.unwrap().pid) {
+        Err(_) => (),
+        Ok(proc_vec) => {
+            for proc in &proc_vec {
+                proc.print();
+            }
+        }
+    }
+
 }
 
 #[cfg(test)]

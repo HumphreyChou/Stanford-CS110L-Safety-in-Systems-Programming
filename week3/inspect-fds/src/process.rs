@@ -1,5 +1,4 @@
 use crate::open_file::OpenFile;
-#[allow(unused)] // TODO: delete this line for Milestone 3
 use std::fs;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,7 +14,24 @@ impl Process {
     }
 
     pub fn print(&self) {
-        println!("========\"{}\" (pid {}, ppid {})========", self.command, self.pid, self.ppid);
+        println!(
+            "========\"{}\" (pid {}, ppid {})========",
+            self.command, self.pid, self.ppid
+        );
+        match self.list_open_files() {
+            None => println!("Warning: could not inspect file descriptors for this process"),
+            Some(open_files) => {
+                for (fd, open_file) in open_files {
+                    println!(
+                        "{:<4} {:<15} cursor: {:<4} {}",
+                        fd,
+                        format!("({})", open_file.access_mode),
+                        open_file.cursor,
+                        open_file.colorized_name()
+                    );
+                }
+            }
+        }
     }
 
     /// This function returns a list of file descriptor numbers for this Process, if that
@@ -23,10 +39,22 @@ impl Process {
     /// information will commonly be unavailable if the process has exited. (Zombie processes
     /// still have a pid, but their resources have already been freed, including the file
     /// descriptor table.)
-    #[allow(unused)] // TODO: delete this line for Milestone 3
     pub fn list_fds(&self) -> Option<Vec<usize>> {
-        // TODO: implement for Milestone 3
-        unimplemented!();
+        let mut vec: Vec<usize> = Vec::new();
+        let path = String::from(format!("/proc/{}/fd", self.pid));
+        let entries = fs::read_dir(&path).ok()?;
+        for entry in entries {
+            let fd: usize = entry
+                .ok()?
+                .path()
+                .file_name()?
+                .to_string_lossy()
+                .into_owned()
+                .parse::<usize>()
+                .ok()?;
+            vec.push(fd);
+        }
+        Some(vec)
     }
 
     /// This function returns a list of (fdnumber, OpenFile) tuples, if file descriptor

@@ -19,7 +19,6 @@ int main() {
     }
     close(fds1[0]);
     close(fds2[1]);
-    sleep(30);
     waitpid(pid, NULL, 0);
     return 0;
 }
