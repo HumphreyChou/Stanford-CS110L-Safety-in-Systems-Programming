@@ -1,5 +1,6 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::Inferior;
+use crate::inferior::Status;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -28,21 +29,62 @@ impl Debugger {
         }
     }
 
+    pub fn print_status(status: Status) {
+        match status {
+            Status::Exited(exit_code) => {
+                println!("target exited (status {})", exit_code);
+            }
+            Status::Signaled(signal) => {
+                println!("target signaled(killed) by {}", signal.as_str());
+            }
+            Status::Stopped(signal, rip) => {
+                println!(
+                    "target stopped at {} by signal {}",
+                    rip,
+                    signal.as_str()
+                );
+            }
+        } 
+    }
+
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    // make sure no previous target exists
+                    if self.inferior.is_some() {
+                        match self.inferior.as_mut().unwrap().terminate() {
+                            Ok(status) => Debugger::print_status(status),
+                            Err(err) => println!("failed to terminate previous target, {}", err)
+                        }
+                    }
+
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        // TODO (milestone 1): make the inferior run
-                        // You may use self.inferior.as_mut().unwrap() to get a mutable reference
-                        // to the Inferior object
+                        match self.inferior.as_mut().unwrap().cont() {
+                            Ok(status) => Debugger::print_status(status),
+                            Err(err) => {
+                                println!("failed to run command, {}", err);
+                            }
+                        }
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Continue => match self.inferior.as_mut().unwrap().cont() {
+                    Ok(status) => Debugger::print_status(status),
+                    Err(err) => {
+                        println!("failed to run command, {}", err);
+                    }
+                },
                 DebuggerCommand::Quit => {
+                    match self.inferior.as_mut().unwrap().terminate() {
+                        Ok(status) => Debugger::print_status(status),
+                        Err(err) => {
+                            println!("failed to terminate target, {}", err);
+                        }
+                    }
                     return;
                 }
             }
