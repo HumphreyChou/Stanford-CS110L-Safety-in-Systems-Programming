@@ -3,6 +3,8 @@ use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::collections::HashMap;
+use std::mem::size_of;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
@@ -31,21 +33,26 @@ fn child_traceme() -> Result<(), std::io::Error> {
     )))
 }
 
+fn align_addr_to_word(addr: usize) -> usize {
+    addr & (-(size_of::<usize>() as isize) as usize)
+}
+
 pub struct Inferior {
     child: Child,
+    replaced_values: HashMap<usize, u8>
 }
 
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
+    pub fn new(target: &str, args: &Vec<String>, breakpoints: &Vec<usize>) -> Option<Inferior> {
         let mut cmd = Command::new(target);
         cmd.args(args);
         unsafe {
             cmd.pre_exec(child_traceme);
         }
         let child = cmd.spawn().expect("fail to spawn target programme");
-        let inferior = Inferior { child };
+        let mut inferior = Inferior { child, replaced_values: HashMap::new() };
         match inferior.wait(None) {
             Ok(status) => match status {
                 Status::Exited(exit_code) => {
@@ -55,11 +62,21 @@ impl Inferior {
                 Status::Signaled(signal) => {
                     if signal.eq(&signal::Signal::SIGTRAP) {
                         println!("target programme killed by SIGTRAP");
-                        return Some(inferior);
+                        return None;
                     }
                 }
                 Status::Stopped(signal, _) => {
                     if signal.eq(&signal::Signal::SIGTRAP) {
+                        for addr in breakpoints.iter() {
+                            // install breakpoints
+                            match inferior.write_byte(*addr, 0xcc) {
+                                Ok(_) => {}
+                                Err(err) => println!(
+                                    "failed to set breakpoint at position {:#x}, {}",
+                                    *addr, err
+                                ),
+                            }
+                        }
                         return Some(inferior);
                     }
                 }
@@ -107,7 +124,12 @@ impl Inferior {
         let mut rbp = ptrace::getregs(self.pid())?.rbp as usize;
         loop {
             let func = debug_data.get_function_from_addr(rip as usize).unwrap();
-            println!("%rip {:#x} {} ({})", rip, func, debug_data.get_line_from_addr(rip).unwrap());
+            println!(
+                "%rip {:#x} {} ({})",
+                rip,
+                func,
+                debug_data.get_line_from_addr(rip).unwrap()
+            );
             if func == "main" {
                 break;
             }
@@ -115,5 +137,21 @@ impl Inferior {
             rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
         }
         Ok(())
+    }
+
+    pub fn write_byte(&mut self, addr: usize, val: u8) -> Result<u8, nix::Error> {
+        let aligned_addr = align_addr_to_word(addr);
+        let byte_offset = addr - aligned_addr;
+        let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType)? as u64;
+        let origin_byte = (word >> 8 * byte_offset) & 0xff;
+        let masked_word = word & !(0xff << 8 * byte_offset);
+        let updated_word = masked_word | ((val as u64) << 8 * byte_offset);
+        ptrace::write(
+            self.pid(),
+            aligned_addr as ptrace::AddressType,
+            updated_word as *mut std::ffi::c_void,
+        )?;
+        self.replaced_values.insert(addr, origin_byte as u8);
+        Ok(origin_byte as u8)
     }
 }
