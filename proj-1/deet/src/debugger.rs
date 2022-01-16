@@ -1,6 +1,8 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::Inferior;
 use crate::inferior::Status;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
+use nix::sys::ptrace;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -9,12 +11,23 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data: DwarfData,
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
-        // TODO (milestone 3): initialize the DwarfData
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("could not open file {}", target);
+                std::process::exit(1);
+            },
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!("could not load debugging symbols from {}: {:?}", target, err);
+                std::process::exit(1);
+            }
+        };
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -26,10 +39,11 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            debug_data,
         }
     }
 
-    pub fn print_status(status: Status) {
+    pub fn print_status(&self, status: Status) {
         match status {
             Status::Exited(exit_code) => {
                 println!("target exited (status {})", exit_code);
@@ -39,9 +53,11 @@ impl Debugger {
             }
             Status::Stopped(signal, rip) => {
                 println!(
-                    "target stopped at {} by signal {}",
+                    "target stopped at {:#x} by signal {} in {} ({})",
                     rip,
-                    signal.as_str()
+                    signal.as_str(),
+                    self.debug_data.get_function_from_addr(rip).unwrap(),
+                    self.debug_data.get_line_from_addr(rip).unwrap()
                 );
             }
         } 
@@ -54,7 +70,7 @@ impl Debugger {
                     // make sure no previous target exists
                     if self.inferior.is_some() {
                         match self.inferior.as_mut().unwrap().terminate() {
-                            Ok(status) => Debugger::print_status(status),
+                            Ok(status) => self.print_status(status),
                             Err(err) => println!("failed to terminate previous target, {}", err)
                         }
                     }
@@ -63,7 +79,7 @@ impl Debugger {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         match self.inferior.as_mut().unwrap().cont() {
-                            Ok(status) => Debugger::print_status(status),
+                            Ok(status) => self.print_status(status),
                             Err(err) => {
                                 println!("failed to run command, {}", err);
                             }
@@ -73,14 +89,17 @@ impl Debugger {
                     }
                 }
                 DebuggerCommand::Continue => match self.inferior.as_mut().unwrap().cont() {
-                    Ok(status) => Debugger::print_status(status),
+                    Ok(status) => self.print_status(status),
                     Err(err) => {
                         println!("failed to run command, {}", err);
                     }
                 },
+                DebuggerCommand::BackTrace => {
+                    let _ = self.inferior.as_mut().unwrap().print_backtrace(&self.debug_data);
+                }
                 DebuggerCommand::Quit => {
                     match self.inferior.as_mut().unwrap().terminate() {
-                        Ok(status) => Debugger::print_status(status),
+                        Ok(status) => self.print_status(status),
                         Err(err) => {
                             println!("failed to terminate target, {}", err);
                         }

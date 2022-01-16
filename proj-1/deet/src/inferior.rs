@@ -7,6 +7,8 @@ use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
 
+use crate::dwarf_data::DwarfData;
+
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
     /// current instruction pointer that it is stopped at.
@@ -47,7 +49,7 @@ impl Inferior {
         match inferior.wait(None) {
             Ok(status) => match status {
                 Status::Exited(exit_code) => {
-                    println!("taget programme exited prematurely (status {})", exit_code);
+                    println!("target programme exited prematurely (status {})", exit_code);
                     return None;
                 }
                 Status::Signaled(signal) => {
@@ -93,10 +95,25 @@ impl Inferior {
     pub fn cont(&self) -> Result<Status, nix::Error> {
         let _ = ptrace::cont(self.pid(), None)?;
         self.wait(None)
-    }   
+    }
 
     pub fn terminate(&mut self) -> Result<Status, nix::Error> {
         let _ = self.child.kill();
         self.wait(None)
+    }
+
+    pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
+        let mut rip = ptrace::getregs(self.pid())?.rip as usize;
+        let mut rbp = ptrace::getregs(self.pid())?.rbp as usize;
+        loop {
+            let func = debug_data.get_function_from_addr(rip as usize).unwrap();
+            println!("%rip {:#x} {} ({})", rip, func, debug_data.get_line_from_addr(rip).unwrap());
+            if func == "main" {
+                break;
+            }
+            rip = ptrace::read(self.pid(), (rbp + 8) as ptrace::AddressType)? as usize;
+            rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
+        }
+        Ok(())
     }
 }
