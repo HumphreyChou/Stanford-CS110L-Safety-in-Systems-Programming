@@ -1,7 +1,10 @@
+use std::ops::RangeBounds;
+
 use crate::debugger_command::DebuggerCommand;
 use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use crate::inferior::Inferior;
 use crate::inferior::Status;
+use libc::ptrace;
 use nix::sys::ptrace;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -49,13 +52,18 @@ impl Debugger {
         }
     }
 
-    pub fn parse_addr(addr: &str) -> Option<usize> {
-        let suffix = if addr.to_lowercase().starts_with("0x") {
-            &addr[2..]
+    pub fn parse_addr(&self, addr: &str) -> Option<usize> {
+        if addr.to_lowercase().starts_with("0x") {
+            // address
+            return usize::from_str_radix(&addr[2..], 16).ok();
+        } else if String::from(addr).parse::<usize>().is_ok() {
+            // line number
+            let line_num = String::from(addr).parse::<usize>().expect("can not parse line number");
+            return self.debug_data.get_addr_for_line(None, line_num);
         } else {
-            &addr
-        };
-        usize::from_str_radix(suffix, 16).ok()
+            // function name
+            return self.debug_data.get_addr_for_function(None, addr);
+        }
     }
 
     pub fn print_status(&self, status: Status) {
@@ -108,6 +116,26 @@ impl Debugger {
                         println!("please run target first");
                         continue;
                     }
+                    // check if inferior is stopped at a breakpoint
+                    let inf_ref = self.inferior.as_mut().unwrap();
+                    let mut regs = ptrace::getregs(inf_ref.pid()).expect("can not read registers");
+                    let rip = regs.rip - 1;
+                    if inf_ref.replaced_values.contains_key(&(rip as usize)) {
+                        // this is a breakpoint, resume original byte
+                        let val = inf_ref.replaced_values.get(&(rip as usize)).unwrap();
+                        let trap_byte = inf_ref.write_byte(rip as usize, *val).expect("can not resume original byte");
+                        if trap_byte != 0xcc {
+                            panic!("failed to resume original byte");
+                        }
+                        regs.rip = rip;
+                        ptrace::setregs(inf_ref.pid(), regs).expect("can not set %rip");
+
+                        // step a intruction and reinstall breakpoint
+                        ptrace::step(inf_ref.pid(), None).expect("can not step target");
+                        inf_ref.wait(None).expect("can not stop after stepping");
+                        inf_ref.write_byte(rip as usize, 0xcc).expect("can not reinstall breakpoint");
+                    }
+
                     match self.inferior.as_mut().unwrap().cont() {
                         Ok(status) => self.print_status(status),
                         Err(err) => {
@@ -123,7 +151,7 @@ impl Debugger {
                         .print_backtrace(&self.debug_data);
                 }
                 DebuggerCommand::Breakpoint(s) => {
-                    match Debugger::parse_addr(&s) {
+                    match self.parse_addr(&s) {
                         Some(addr) => {
                             self.breakpoints.push(addr);
                             if self.inferior.is_some() {

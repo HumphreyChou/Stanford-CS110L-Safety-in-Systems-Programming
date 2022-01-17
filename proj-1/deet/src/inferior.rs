@@ -39,7 +39,7 @@ fn align_addr_to_word(addr: usize) -> usize {
 
 pub struct Inferior {
     child: Child,
-    replaced_values: HashMap<usize, u8>
+    pub replaced_values: HashMap<usize, u8>,
 }
 
 impl Inferior {
@@ -52,7 +52,10 @@ impl Inferior {
             cmd.pre_exec(child_traceme);
         }
         let child = cmd.spawn().expect("fail to spawn target programme");
-        let mut inferior = Inferior { child, replaced_values: HashMap::new() };
+        let mut inferior = Inferior {
+            child,
+            replaced_values: HashMap::new(),
+        };
         match inferior.wait(None) {
             Ok(status) => match status {
                 Status::Exited(exit_code) => {
@@ -151,7 +154,9 @@ impl Inferior {
             aligned_addr as ptrace::AddressType,
             updated_word as *mut std::ffi::c_void,
         )?;
-        self.replaced_values.insert(addr, origin_byte as u8);
+        if val == 0xcc {
+            self.replaced_values.insert(addr, origin_byte as u8);
+        }
         Ok(origin_byte as u8)
     }
 }
