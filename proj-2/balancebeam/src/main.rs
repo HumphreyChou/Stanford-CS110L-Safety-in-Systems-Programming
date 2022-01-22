@@ -1,39 +1,44 @@
 mod request;
 mod response;
 
-use clap::Clap;
+use clap::Parser;
 use rand::{Rng, SeedableRng};
 use std::net::{TcpListener, TcpStream};
+use std::thread;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
 /// provide a fancy way to automatically construct a command-line argument parser.
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 #[clap(about = "Fun with load balancing")]
 struct CmdOptions {
     #[clap(
         short,
         long,
-        about = "IP/port to bind to",
+        // about = "IP/port to bind to",
         default_value = "0.0.0.0:1100"
     )]
     bind: String,
-    #[clap(short, long, about = "Upstream host to forward requests to")]
+    #[clap(
+        short, 
+        long, 
+        // about = "Upstream host to forward requests to"
+    )]
     upstream: Vec<String>,
     #[clap(
         long,
-        about = "Perform active health checks on this interval (in seconds)",
+        // about = "Perform active health checks on this interval (in seconds)",
         default_value = "10"
     )]
     active_health_check_interval: usize,
     #[clap(
     long,
-    about = "Path to send request to for active health checks",
+    // about = "Path to send request to for active health checks",
     default_value = "/"
     )]
     active_health_check_path: String,
     #[clap(
         long,
-        about = "Maximum number of requests to accept per IP per minute (0 = unlimited)",
+        // about = "Maximum number of requests to accept per IP per minute (0 = unlimited)",
         default_value = "0"
     )]
     max_requests_per_minute: usize,
@@ -43,6 +48,7 @@ struct CmdOptions {
 /// to, what servers have failed, rate limiting counts, etc.)
 ///
 /// You should add fields to this struct in later milestones.
+#[derive(Clone)]
 struct ProxyState {
     /// How frequently we check whether upstream servers are alive (Milestone 4)
     #[allow(dead_code)]
@@ -90,11 +96,21 @@ fn main() {
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
     };
+
+    let mut threads = Vec::new();
     for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            // Handle the connection!
-            handle_connection(stream, &state);
+        match stream {
+            Ok(client_conn) => {
+                let state_clone = state.clone();
+                threads.push(thread::spawn(move || {
+                    handle_connection(client_conn, &state_clone);
+                }))
+            },
+            Err(err) => log::error!("failed to connect client, {}", err)
         }
+    }
+    for handle in threads {
+        handle.join().expect("failed to reap child thread");
     }
 }
 
@@ -111,7 +127,11 @@ fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> 
 
 fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
-    log::info!("{} <- {}", client_ip, response::format_response_line(&response));
+    log::info!(
+        "{} <- {}",
+        client_ip,
+        response::format_response_line(&response)
+    );
     if let Err(error) = response::write_to_stream(&response, client_conn) {
         log::warn!("Failed to send response to client: {}", error);
         return;
@@ -177,7 +197,11 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
 
         // Forward the request to the server
         if let Err(error) = request::write_to_stream(&request, &mut upstream_conn) {
-            log::error!("Failed to send request to upstream {}: {}", upstream_ip, error);
+            log::error!(
+                "Failed to send request to upstream {}: {}",
+                upstream_ip,
+                error
+            );
             let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
             send_response(&mut client_conn, &response);
             return;
